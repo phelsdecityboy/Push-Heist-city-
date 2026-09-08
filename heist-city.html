@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Heist City</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#87ceeb;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; touch-action:none; }
+  canvas { display:block; }
+
+  #hud { position:fixed; top:0; left:0; right:0; padding:12px 14px; display:flex;
+    justify-content:space-between; align-items:flex-start; pointer-events:none; z-index:10; }
+  #missionBox { background:rgba(0,0,0,0.55); color:#fff; padding:10px 14px; border-radius:10px;
+    max-width:62%; font-size:14px; line-height:1.35; text-shadow:0 1px 2px rgba(0,0,0,0.6); }
+  #missionBox b { color:#ffd54a; }
+  #stars { background:rgba(0,0,0,0.55); padding:10px 12px; border-radius:10px; font-size:20px;
+    letter-spacing:2px; color:#666; text-shadow:0 1px 2px rgba(0,0,0,0.6); }
+  #stars span.on { color:#ffd54a; }
+
+  #compassWrap { position:fixed; top:70px; left:50%; transform:translateX(-50%); z-index:10;
+    pointer-events:none; display:flex; flex-direction:column; align-items:center; }
+  #compass { width:34px; height:34px; transition: transform 0.1s linear; }
+  #compassLabel { color:#fff; font-size:11px; background:rgba(0,0,0,0.5); padding:2px 8px;
+    border-radius:6px; margin-top:2px; text-shadow:0 1px 2px rgba(0,0,0,0.6); }
+
+  #centerMsg { position:fixed; top:38%; left:50%; transform:translate(-50%,-50%); z-index:20;
+    color:#fff; font-size:30px; font-weight:800; text-shadow:0 2px 8px rgba(0,0,0,0.8);
+    pointer-events:none; opacity:0; transition:opacity 0.25s; text-align:center; }
+  #centerMsg.show { opacity:1; }
+
+  #prompt { position:fixed; bottom:150px; left:50%; transform:translateX(-50%); z-index:15;
+    background:rgba(0,0,0,0.7); color:#fff; padding:8px 16px; border-radius:20px; font-size:14px;
+    opacity:0; transition:opacity 0.15s; pointer-events:none; }
+  #prompt.show { opacity:1; }
+
+  #joyZone { position:fixed; left:18px; bottom:18px; width:130px; height:130px; z-index:12;
+    touch-action:none; }
+  #joyBase { position:absolute; left:0; top:0; width:130px; height:130px; border-radius:50%;
+    background:rgba(255,255,255,0.15); border:2px solid rgba(255,255,255,0.35); }
+  #joyKnob { position:absolute; left:41px; top:41px; width:48px; height:48px; border-radius:50%;
+    background:rgba(255,255,255,0.55); border:2px solid rgba(255,255,255,0.7); }
+
+  #actionBtn { position:fixed; right:22px; bottom:34px; z-index:12; width:88px; height:88px;
+    border-radius:50%; background:rgba(255,213,74,0.9); border:3px solid rgba(0,0,0,0.25);
+    color:#1a1a1a; font-weight:800; font-size:13px; display:flex; align-items:center;
+    justify-content:center; text-align:center; user-select:none; }
+  #actionBtn:active { background:rgba(255,213,74,1); }
+
+  #handbrakeBtn { position:fixed; right:120px; bottom:44px; z-index:12; width:64px; height:64px;
+    border-radius:50%; background:rgba(255,255,255,0.25); border:2px solid rgba(255,255,255,0.4);
+    color:#fff; font-weight:700; font-size:11px; display:none; align-items:center;
+    justify-content:center; text-align:center; user-select:none; }
+
+  #hint { position:fixed; bottom:8px; left:50%; transform:translateX(-50%); z-index:10; color:#fff;
+    font-size:11px; background:rgba(0,0,0,0.4); padding:3px 10px; border-radius:8px;
+    pointer-events:none; opacity:0.85; }
+
+  @media (min-width:900px){ #joyZone,#actionBtn,#handbrakeBtn{ opacity:0.55; } }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div id="missionBox">Loading city...</div>
+  <div id="stars"><span id="s1">★</span><span id="s2">★</span><span id="s3">★</span></div>
+</div>
+
+<div id="compassWrap"><div id="compass">🧭</div><div id="compassLabel">objective</div></div>
+<div id="centerMsg"></div>
+<div id="prompt"></div>
+
+<div id="joyZone"><div id="joyBase"></div><div id="joyKnob"></div></div>
+<div id="actionBtn">ENTER<br>CAR</div>
+<div id="handbrakeBtn">BRAKE</div>
+<div id="hint">WASD / Arrows to move &middot; E to enter/exit &middot; Joystick + button on mobile</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+"use strict";
+
+// ---------- basic setup ----------
+var scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+scene.fog = new THREE.Fog(0x87ceeb, 60, 190);
+
+var camera = new THREE.PerspectiveCamera(62, window.innerWidth/window.innerHeight, 0.1, 500);
+var renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+window.addEventListener('resize', function(){
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+var hemi = new THREE.HemisphereLight(0xffffff, 0x444455, 0.9);
+scene.add(hemi);
+var sun = new THREE.DirectionalLight(0xfff2d0, 0.9);
+sun.position.set(60, 90, 40);
+scene.add(sun);
+
+// ground
+var WORLD = 130;
+var groundMat = new THREE.MeshLambertMaterial({ color:0x3a3a3f });
+var ground = new THREE.Mesh(new THREE.PlaneGeometry(WORLD*2+40, WORLD*2+40), groundMat);
+ground.rotation.x = -Math.PI/2;
+scene.add(ground);
+
+// ---------- city generation ----------
+var buildings = []; // {x,z,r,h}
+var BLOCK = 22, GAP = 9;
+(function buildCity(){
+  var range = 5;
+  for (var bx=-range; bx<=range; bx++){
+    for (var bz=-range; bz<=range; bz++){
+      var cx = bx*BLOCK, cz = bz*BLOCK;
+      if (Math.abs(cx) < 14 && Math.abs(cz) < 14) continue; // clear spawn plaza
+      if (Math.random() < 0.12) continue; // occasional gap/plaza
+      var w = GAP + Math.random()*6;
+      var d = GAP + Math.random()*6;
+      var h = 6 + Math.random()*34;
+      var hue = 0.55 + Math.random()*0.15;
+      var mat = new THREE.MeshLambertMaterial({ color: new THREE.Color().setHSL(hue, 0.12, 0.35+Math.random()*0.25) });
+      var mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      mesh.position.set(cx + (Math.random()-0.5)*3, h/2, cz + (Math.random()-0.5)*3);
+      scene.add(mesh);
+      // little roof cap for variety
+      if (Math.random() < 0.4){
+        var cap = new THREE.Mesh(new THREE.BoxGeometry(w*0.4, 2, d*0.4),
+          new THREE.MeshLambertMaterial({color:0x222222}));
+        cap.position.set(mesh.position.x, h+1, mesh.position.z);
+        scene.add(cap);
+      }
+      buildings.push({ x: mesh.position.x, z: mesh.position.z, r: Math.max(w,d)/2 * 0.95, h:h });
+    }
+  }
+  // world boundary walls (invisible-ish colliders)
+  var edge = WORLD;
+  buildings.push({x:0, z:-edge-4, r: edge+2, h:20});
+  buildings.push({x:0, z: edge+4, r: edge+2, h:20});
+  buildings.push({x:-edge-4, z:0, r: edge+2, h:20});
+  buildings.push({x: edge+4, z:0, r: edge+2, h:20});
+})();
+
+function collideCircle(pos, radius){
+  for (var i=0;i<buildings.length;i++){
+    var b = buildings[i];
+    var dx = pos.x-b.x, dz = pos.z-b.z;
+    var dist = Math.sqrt(dx*dx+dz*dz);
+    var min = b.r + radius;
+    if (dist < min && dist > 0.0001){
+      var push = (min-dist);
+      pos.x += (dx/dist)*push;
+      pos.z += (dz/dist)*push;
+      return true;
+    }
+  }
+  return false;
+}
+
+function randomOpenSpot(minDistFromOrigin){
+  var tries = 0;
+  while (tries < 200){
+    tries++;
+    var x = (Math.random()-0.5) * (WORLD*1.7);
+    var z = (Math.random()-0.5) * (WORLD*1.7);
+    if (Math.sqrt(x*x+z*z) < (minDistFromOrigin||0)) continue;
+    var ok = true;
+    for (var i=0;i<buildings.length;i++){
+      var b = buildings[i];
+      var dx=x-b.x, dz=z-b.z;
+      if (Math.sqrt(dx*dx+dz*dz) < b.r+4){ ok=false; break; }
+    }
+    if (ok) return {x:x, z:z};
+  }
+  return {x:0, z:20};
+}
+
+// ---------- decorative parked cars (scenery/obstacles only) ----------
+function makeCarMesh(bodyColor){
+  var g = new THREE.Group();
+  var body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.7, 4.2),
+    new THREE.MeshLambertMaterial({ color: bodyColor }));
+  body.position.y = 0.55;
+  g.add(body);
+  var cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.55, 2.0),
+    new THREE.MeshLambertMaterial({ color: 0x1c2733 }));
+  cabin.position.set(0, 1.0, -0.2);
+  g.add(cabin);
+  var wheels = [];
+  var wg = new THREE.CylinderGeometry(0.34, 0.34, 0.32, 14);
+  var wm = new THREE.MeshLambertMaterial({ color:0x111111 });
+  var offs = [[-1.05,0.34,1.35],[1.05,0.34,1.35],[-1.05,0.34,-1.35],[1.05,0.34,-1.35]];
+  for (var i=0;i<4;i++){
+    var wheel = new THREE.Mesh(wg, wm);
+    wheel.rotation.z = Math.PI/2;
+    wheel.position.set(offs[i][0], offs[i][1], offs[i][2]);
+    g.add(wheel);
+    wheels.push(wheel);
+  }
+  var lightMat = new THREE.MeshBasicMaterial({ color:0xfff6c8 });
+  var hl1 = new THREE.Mesh(new THREE.BoxGeometry(0.25,0.15,0.05), lightMat);
+  hl1.position.set(-0.7,0.55,2.12); g.add(hl1);
+  var hl2 = hl1.clone(); hl2.position.x = 0.7; g.add(hl2);
+  g.userData.wheels = wheels;
+  return g;
+}
+
+var decorCars = [];
+for (var i=0;i<16;i++){
+  var spot = randomOpenSpot(10);
+  var mesh = makeCarMesh(new THREE.Color().setHSL(Math.random(),0.4,0.45));
+  mesh.position.set(spot.x, 0, spot.z);
+  mesh.rotation.y = Math.random()*Math.PI*2;
+  scene.add(mesh);
+  decorCars.push({ mesh:mesh, r:1.6 });
+}
+
+// ---------- marker rings ----------
+function makeRing(color){
+  var ring = new THREE.Mesh(
+    new THREE.RingGeometry(2.0, 2.5, 32),
+    new THREE.MeshBasicMaterial({ color:color, side:THREE.DoubleSide, transparent:true, opacity:0.85 })
+  );
+  ring.rotation.x = -Math.PI/2;
+  ring.position.y = 0.05;
+  scene.add(ring);
+  return ring;
+}
+var pickupRing = makeRing(0xffd54a);
+var deliveryRing = makeRing(0x39d353);
+deliveryRing.visible = false;
+
+// ---------- player (on foot) ----------
+var player = new THREE.Group();
+var pBody = new THREE.Mesh(new THREE.BoxGeometry(0.55,1.05,0.35),
+  new THREE.MeshLambertMaterial({ color:0x2a6fdb }));
+pBody.position.y = 0.85;
+player.add(pBody);
+var pHead = new THREE.Mesh(new THREE.SphereGeometry(0.26,14,14),
+  new THREE.MeshLambertMaterial({ color:0xe0b088 }));
+pHead.position.y = 1.55;
+player.add(pHead);
+scene.add(player);
+
+var state = {
+  pos: new THREE.Vector3(0,0,0),
+  angle: 0,
+  speed: 0,
+  inCar: null,       // reference to active car object when driving
+};
+
+// ---------- car factory (mission + cop cars, actually driveable) ----------
+function makeDriveCar(color, isCop){
+  var mesh = makeCarMesh(color);
+  if (isCop){
+    var bar = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.22,0.3),
+      new THREE.MeshBasicMaterial({ color:0x2255ff }));
+    bar.position.set(0,1.35,-0.2);
+    mesh.add(bar);
+  }
+  scene.add(mesh);
+  return {
+    mesh: mesh,
+    pos: new THREE.Vector3(0,0,0),
+    angle: 0,
+    speed: 0,
+    steer: 0,
+    isCop: !!isCop,
+    alive: true
+  };
+}
+
+var targetCar = null;   // the car the player must steal
+var cops = [];
+var wanted = 0;
+var missionState = 'find_car'; // find_car -> deliver -> (loop)
+var deliveryPos = null;
+var missionCount = 0;
+var copSpawnTimer = 0;
+var busted = false;
+var flashTimer = 0;
+
+function setMissionText(html){ document.getElementById('missionBox').innerHTML = html; }
+function centerMsg(text, ms){
+  var el = document.getElementById('centerMsg');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(function(){ el.classList.remove('show'); }, ms || 1600);
+}
+
+function spawnMission(){
+  missionCount++;
+  var a = randomOpenSpot(18);
+  var b = randomOpenSpot(18);
+  // ensure decent distance apart
+  var tries=0;
+  while (Math.hypot(a.x-b.x, a.z-b.z) < 40 && tries<50){ b = randomOpenSpot(18); tries++; }
+
+  if (targetCar){ scene.remove(targetCar.mesh); }
+  targetCar = makeDriveCar(0xe8452c, false);
+  targetCar.pos.set(a.x, 0, a.z);
+  targetCar.angle = Math.random()*Math.PI*2;
+
+  pickupRing.position.set(a.x, 0.05, a.z);
+  pickupRing.visible = true;
+  deliveryRing.visible = false;
+  deliveryPos = b;
+
+  missionState = 'find_car';
+  wanted = 0;
+  updateStars();
+  setMissionText('<b>Job #' + missionCount + '</b><br>Steal the <b style="color:#ff8a6a">red car</b> marked on your compass.');
+}
+
+function updateStars(){
+  for (var i=1;i<=3;i++){
+    document.getElementById('s'+i).className = (i<=wanted) ? 'on' : '';
+  }
+}
+
+function beginChase(){
+  missionState = 'deliver';
+  wanted = 1;
+  updateStars();
+  pickupRing.visible = false;
+  deliveryRing.position.set(deliveryPos.x, 0.05, deliveryPos.z);
+  deliveryRing.visible = true;
+  copSpawnTimer = 1.2;
+  setMissionText('<b>Wanted!</b><br>Drive the <b style="color:#7CFC9A">green marker</b> to deliver the car. Lose the cops!');
+}
+
+function failMission(reason){
+  busted = false;
+  centerMsg(reason || 'BUSTED!', 1800);
+  // clear cops
+  cops.forEach(function(c){ scene.remove(c.mesh); });
+  cops = [];
+  wanted = 0;
+  updateStars();
+  // eject player from car if inside
+  if (state.inCar){
+    exitCar(true);
+  }
+  spawnMission();
+}
+
+function completeMission(){
+  cops.forEach(function(c){ scene.remove(c.mesh); });
+  cops = [];
+  wanted = 0;
+  updateStars();
+  centerMsg('MISSION COMPLETE  +$500', 1800);
+  exitCar(true);
+  setTimeout(spawnMission, 900);
+}
+
+function spawnCop(){
+  if (cops.length >= Math.min(2 + Math.floor(missionCount/2), 4)) return;
+  var refPos = state.inCar ? state.inCar.pos : state.pos;
+  var ang = Math.random()*Math.PI*2;
+  var dist = 34 + Math.random()*10;
+  var cop = makeDriveCar(0x1c1c1c, true);
+  cop.pos.set(refPos.x + Math.cos(ang)*dist, 0, refPos.z + Math.sin(ang)*dist);
+  cop.angle = ang + Math.PI;
+  cops.push(cop);
+}
+
+// ---------- input ----------
+var keys = {};
+window.addEventListener('keydown', function(e){
+  keys[e.key.toLowerCase()] = true;
+  if (e.key.toLowerCase()==='e') tryToggleEnter();
+});
+window.addEventListener('keyup', function(e){ keys[e.key.toLowerCase()] = false; });
+
+var joy = { active:false, dx:0, dy:0, startX:0, startY:0 };
+var joyZone = document.getElementById('joyZone');
+var joyKnob = document.getElementById('joyKnob');
+function joyStart(x,y){ joy.active=true; joy.startX=x; joy.startY=y; }
+function joyMove(x,y){
+  if (!joy.active) return;
+  var dx = x-joy.startX, dy = y-joy.startY;
+  var max = 46;
+  var len = Math.hypot(dx,dy);
+  if (len>max){ dx = dx/len*max; dy = dy/len*max; }
+  joy.dx = dx/max; joy.dy = dy/max;
+  joyKnob.style.left = (41+dx)+'px';
+  joyKnob.style.top = (41+dy)+'px';
+}
+function joyEnd(){ joy.active=false; joy.dx=0; joy.dy=0; joyKnob.style.left='41px'; joyKnob.style.top='41px'; }
+joyZone.addEventListener('touchstart', function(e){ var t=e.changedTouches[0]; joyStart(t.clientX,t.clientY); e.preventDefault(); }, {passive:false});
+joyZone.addEventListener('touchmove', function(e){ var t=e.changedTouches[0]; joyMove(t.clientX,t.clientY); e.preventDefault(); }, {passive:false});
+joyZone.addEventListener('touchend', function(e){ joyEnd(); e.preventDefault(); }, {passive:false});
+joyZone.addEventListener('mousedown', function(e){ joyStart(e.clientX,e.clientY); });
+window.addEventListener('mousemove', function(e){ if(joy.active) joyMove(e.clientX,e.clientY); });
+window.addEventListener('mouseup', function(){ joyEnd(); });
+
+var actionBtn = document.getElementById('actionBtn');
+actionBtn.addEventListener('touchstart', function(e){ tryToggleEnter(); e.preventDefault(); }, {passive:false});
+actionBtn.addEventListener('mousedown', function(e){ tryToggleEnter(); });
+
+var nearEnterable = false;
+
+function tryToggleEnter(){
+  if (state.inCar){
+    exitCar(false);
+  } else if (nearEnterable && targetCar && missionState==='find_car'){
+    enterTargetCar();
+  }
+}
+
+function enterTargetCar(){
+  state.inCar = targetCar;
+  player.visible = false;
+  document.getElementById('prompt').classList.remove('show');
+  actionBtn.innerHTML = 'EXIT<br>CAR';
+  beginChase();
+}
+
+function exitCar(silent){
+  if (!state.inCar) return;
+  var c = state.inCar;
+  state.pos.set(c.pos.x + Math.sin(c.angle)*2.2, 0, c.pos.z + Math.cos(c.angle)*2.2);
+  state.angle = c.angle;
+  player.visible = true;
+  state.inCar = null;
+  actionBtn.innerHTML = 'ENTER<br>CAR';
+  if (!silent && missionState==='deliver'){
+    failMission('Job abandoned!');
+  }
+}
+
+// ---------- camera ----------
+var camPos = new THREE.Vector3(0,8,-12);
+var camLook = new THREE.Vector3();
+
+// ---------- main loop ----------
+var clock = new THREE.Clock();
+spawnMission();
+
+function updatePlayerOnFoot(dt){
+  var mx = 0, mz = 0;
+  if (keys['w'] || keys['arrowup']) mz -= 1;
+  if (keys['s'] || keys['arrowdown']) mz += 1;
+  if (keys['a'] || keys['arrowleft']) mx -= 1;
+  if (keys['d'] || keys['arrowright']) mx += 1;
+  mx += joy.dx; mz += joy.dy;
+  var len = Math.hypot(mx,mz);
+  var speed = 5.2;
+  if (len > 0.05){
+    mx/=len; mz/=len;
+    // move relative to camera yaw
+    var camYaw = Math.atan2(camPos.x-state.pos.x, camPos.z-state.pos.z);
+    var worldX = mx*Math.cos(camYaw) + mz*Math.sin(camYaw);
+    var worldZ = -mx*Math.sin(camYaw) + mz*Math.cos(camYaw);
+    state.pos.x += worldX*speed*dt*Math.min(len,1);
+    state.pos.z += worldZ*speed*dt*Math.min(len,1);
+    state.angle = Math.atan2(worldX, worldZ);
+  }
+  collideCircle(state.pos, 0.4);
+  state.pos.x = Math.max(-WORLD, Math.min(WORLD, state.pos.x));
+  state.pos.z = Math.max(-WORLD, Math.min(WORLD, state.pos.z));
+  player.position.set(state.pos.x, 0, state.pos.z);
+  player.rotation.y = state.angle;
+
+  // proximity check to target car
+  if (missionState==='find_car' && targetCar){
+    var d = Math.hypot(state.pos.x-targetCar.pos.x, state.pos.z-targetCar.pos.z);
+    nearEnterable = d < 3.2;
+    var pr = document.getElementById('prompt');
+    if (nearEnterable){ pr.textContent='Press E / tap ENTER CAR'; pr.classList.add('show'); }
+    else pr.classList.remove('show');
+  }
+}
+
+function driveCar(car, throttleIn, steerIn, dt, maxSpeed){
+  var accel = 9.5, brake = 14, friction = 4.2, turnRate = 2.4;
+  if (throttleIn !== 0){
+    car.speed += throttleIn*accel*dt;
+  } else {
+    var f = friction*dt;
+    if (car.speed > 0) car.speed = Math.max(0, car.speed-f);
+    else if (car.speed < 0) car.speed = Math.min(0, car.speed+f);
+  }
+  car.speed = Math.max(-maxSpeed*0.5, Math.min(maxSpeed, car.speed));
+  var turnFactor = Math.max(0.25, Math.min(1, Math.abs(car.speed)/4));
+  car.angle += steerIn * turnRate * dt * turnFactor * (car.speed>=0?1:-1);
+  car.pos.x += Math.sin(car.angle) * car.speed * dt;
+  car.pos.z += Math.cos(car.angle) * car.speed * dt;
+  var hit = collideCircle(car.pos, 1.7);
+  if (hit) car.speed *= 0.35;
+  car.pos.x = Math.max(-WORLD, Math.min(WORLD, car.pos.x));
+  car.pos.z = Math.max(-WORLD, Math.min(WORLD, car.pos.z));
+  car.mesh.position.set(car.pos.x, 0, car.pos.z);
+  car.mesh.rotation.y = car.angle;
+  var wheelSpin = car.speed*dt*2.2;
+  car.mesh.userData.wheels.forEach(function(w){ w.rotation.x += wheelSpin; });
+}
+
+function updatePlayerCar(dt){
+  var throttle = 0, steer = 0;
+  if (keys['w'] || keys['arrowup']) throttle += 1;
+  if (keys['s'] || keys['arrowdown']) throttle -= 1;
+  if (keys['a'] || keys['arrowleft']) steer += 1;
+  if (keys['d'] || keys['arrowright']) steer -= 1;
+  throttle += -joy.dy;
+  steer += -joy.dx;
+  throttle = Math.max(-1, Math.min(1, throttle));
+  steer = Math.max(-1, Math.min(1, steer));
+  driveCar(state.inCar, throttle, steer, dt, 15);
+
+  if (missionState==='deliver'){
+    var d = Math.hypot(state.inCar.pos.x-deliveryPos.x, state.inCar.pos.z-deliveryPos.z);
+    if (d < 3.2){ completeMission(); }
+  }
+}
+
+function updateCops(dt){
+  if (missionState !== 'deliver'){ return; }
+  copSpawnTimer -= dt;
+  if (copSpawnTimer <= 0){
+    spawnCop();
+    copSpawnTimer = 3.2;
+  }
+  var targetPos = state.inCar ? state.inCar.pos : state.pos;
+  for (var i=cops.length-1;i>=0;i--){
+    var cop = cops[i];
+    var dx = targetPos.x-cop.pos.x, dz = targetPos.z-cop.pos.z;
+    var dist = Math.hypot(dx,dz);
+    var desiredAngle = Math.atan2(dx,dz);
+    var diff = ((desiredAngle - cop.angle + Math.PI*3) % (Math.PI*2)) - Math.PI;
+    var steer = Math.max(-1, Math.min(1, diff*1.4));
+    var throttle = dist > 4 ? 1 : 0.2;
+    driveCar(cop, throttle, steer, dt, 11.5);
+
+    if (state.inCar && dist < 2.6){
+      failMission('BUSTED!');
+      return;
+    }
+  }
+}
+
+function updateCompass(){
+  var objX, objZ;
+  if (missionState==='find_car' && targetCar){ objX=targetCar.pos.x; objZ=targetCar.pos.z; }
+  else if (missionState==='deliver'){ objX=deliveryPos.x; objZ=deliveryPos.z; }
+  else return;
+  var refPos = state.inCar ? state.inCar.pos : state.pos;
+  var refAngle = state.inCar ? state.inCar.angle : state.angle;
+  var ang = Math.atan2(objX-refPos.x, objZ-refPos.z) - refAngle;
+  document.getElementById('compass').style.transform = 'rotate(' + (ang*180/Math.PI) + 'deg)';
+  document.getElementById('compassLabel').textContent =
+    Math.round(Math.hypot(objX-refPos.x, objZ-refPos.z)) + 'm';
+}
+
+function updateCamera(dt){
+  var refPos = state.inCar ? state.inCar.pos : state.pos;
+  var refAngle = state.inCar ? state.inCar.angle : state.angle;
+  var backDist = state.inCar ? 9.5 : 5.5;
+  var height = state.inCar ? 4.2 : 2.8;
+  var desired = new THREE.Vector3(
+    refPos.x - Math.sin(refAngle)*backDist,
+    height,
+    refPos.z - Math.cos(refAngle)*backDist
+  );
+  camPos.lerp(desired, Math.min(1, dt*4.5));
+  camera.position.copy(camPos);
+  camLook.lerp(new THREE.Vector3(refPos.x, 1.2, refPos.z), Math.min(1, dt*6));
+  camera.lookAt(camLook);
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  var dt = Math.min(clock.getDelta(), 0.05);
+
+  if (state.inCar) updatePlayerCar(dt); else updatePlayerOnFoot(dt);
+  updateCops(dt);
+  updateCompass();
+  updateCamera(dt);
+
+  pickupRing.rotation.z += dt*0.5;
+  deliveryRing.rotation.z += dt*0.5;
+
+  renderer.render(scene, camera);
+}
+animate();
+
+})();
+</script>
+</body>
+</html>
